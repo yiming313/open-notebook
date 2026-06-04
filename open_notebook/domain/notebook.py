@@ -60,7 +60,9 @@ class Notebook(ObjectModel):
             logger.exception(e)
             raise DatabaseOperationError(e)
 
-    async def get_chat_sessions(self) -> List["ChatSession"]:
+    async def get_chat_sessions(
+        self, client_id: Optional[str] = None
+    ) -> List["ChatSession"]:
         try:
             srcs = await repo_query(
                 """
@@ -71,9 +73,10 @@ class Notebook(ObjectModel):
                     where out=$id
                     fetch chat_session
                 )
+                where chat_session[0].client_id = $client_id
                 order by chat_session.updated desc
             """,
-                {"id": ensure_record_id(self.id)},
+                {"id": ensure_record_id(self.id), "client_id": client_id},
             )
             return (
                 [ChatSession(**src["chat_session"][0]) for src in srcs] if srcs else []
@@ -612,9 +615,12 @@ class Note(ObjectModel):
 
 class ChatSession(ObjectModel):
     table_name: ClassVar[str] = "chat_session"
-    nullable_fields: ClassVar[set[str]] = {"model_override"}
+    nullable_fields: ClassVar[set[str]] = {"model_override", "client_id"}
     title: Optional[str] = None
     model_override: Optional[str] = None
+    # Per-browser owner id (random UUID from the X-Client-ID header). Used to keep
+    # chat sessions private per browser. None for legacy/pre-feature sessions.
+    client_id: Optional[str] = None
 
     async def relate_to_notebook(self, notebook_id: str) -> Any:
         if not notebook_id:

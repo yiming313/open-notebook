@@ -2,7 +2,7 @@ import asyncio
 import traceback
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query
 from langchain_core.runnables import RunnableConfig
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -12,10 +12,22 @@ from open_notebook.domain.notebook import ChatSession, Note, Notebook, Source
 from open_notebook.exceptions import (
     NotFoundError,
 )
+from open_notebook.graphs.chat import delete_thread as delete_chat_thread
 from open_notebook.graphs.chat import graph as chat_graph
 from open_notebook.utils.graph_utils import get_session_message_count
 
 router = APIRouter()
+
+
+def _ensure_session_owner(session: ChatSession, client_id: Optional[str]) -> None:
+    """Guard chat-session access to the browser that owns it.
+
+    Sessions are private per browser (X-Client-ID header). If the caller's
+    client_id does not match the session's, raise 404 (not 403) so we don't
+    leak the existence of other users' sessions.
+    """
+    if session.client_id != client_id:
+        raise HTTPException(status_code=404, detail="Session not found")
 
 
 # Request/Response models
@@ -94,16 +106,19 @@ class SuccessResponse(BaseModel):
 
 
 @router.get("/chat/sessions", response_model=List[ChatSessionResponse])
-async def get_sessions(notebook_id: str = Query(..., description="Notebook ID")):
-    """Get all chat sessions for a notebook."""
+async def get_sessions(
+    notebook_id: str = Query(..., description="Notebook ID"),
+    x_client_id: Optional[str] = Header(None),
+):
+    """Get the calling browser's chat sessions for a notebook."""
     try:
         # Get notebook to verify it exists
         notebook = await Notebook.get(notebook_id)
         if not notebook:
             raise HTTPException(status_code=404, detail="Notebook not found")
 
-        # Get sessions for this notebook
-        sessions_list = await notebook.get_chat_sessions()
+        # Get sessions for this notebook, scoped to the calling browser
+        sessions_list = await notebook.get_chat_sessions(x_client_id)
 
         results = []
         for session in sessions_list:
@@ -135,8 +150,11 @@ async def get_sessions(notebook_id: str = Query(..., description="Notebook ID"))
 
 
 @router.post("/chat/sessions", response_model=ChatSessionResponse)
-async def create_session(request: CreateSessionRequest):
-    """Create a new chat session."""
+async def create_session(
+    request: CreateSessionRequest,
+    x_client_id: Optional[str] = Header(None),
+):
+    """Create a new chat session owned by the calling browser."""
     try:
         # Verify notebook exists
         notebook = await Notebook.get(request.notebook_id)
@@ -148,6 +166,7 @@ async def create_session(request: CreateSessionRequest):
             title=request.title
             or f"Chat Session {asyncio.get_event_loop().time():.0f}",
             model_override=request.model_override,
+            client_id=x_client_id,
         )
         await session.save()
 
@@ -175,7 +194,10 @@ async def create_session(request: CreateSessionRequest):
 @router.get(
     "/chat/sessions/{session_id}", response_model=ChatSessionWithMessagesResponse
 )
-async def get_session(session_id: str):
+async def get_session(
+    session_id: str,
+    x_client_id: Optional[str] = Header(None),
+):
     """Get a specific session with its messages."""
     try:
         # Get session
@@ -188,6 +210,7 @@ async def get_session(session_id: str):
         session = await ChatSession.get(full_session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
+        _ensure_session_owner(session, x_client_id)
 
         # Get session state from LangGraph to retrieve messages
         # Use sync get_state() in a thread since SqliteSaver doesn't support async
@@ -248,7 +271,11 @@ async def get_session(session_id: str):
 
 
 @router.put("/chat/sessions/{session_id}", response_model=ChatSessionResponse)
-async def update_session(session_id: str, request: UpdateSessionRequest):
+async def update_session(
+    session_id: str,
+    request: UpdateSessionRequest,
+    x_client_id: Optional[str] = Header(None),
+):
     """Update session title."""
     try:
         # Ensure session_id has proper table prefix
@@ -260,6 +287,7 @@ async def update_session(session_id: str, request: UpdateSessionRequest):
         session = await ChatSession.get(full_session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
+        _ensure_session_owner(session, x_client_id)
 
         update_data = request.model_dump(exclude_unset=True)
 
@@ -304,8 +332,11 @@ async def update_session(session_id: str, request: UpdateSessionRequest):
 
 
 @router.delete("/chat/sessions/{session_id}", response_model=SuccessResponse)
-async def delete_session(session_id: str):
-    """Delete a chat session."""
+async def delete_session(
+    session_id: str,
+    x_client_id: Optional[str] = Header(None),
+):
+    """Delete a chat session and its conversation history."""
     try:
         # Ensure session_id has proper table prefix
         full_session_id = (
@@ -316,8 +347,18 @@ async def delete_session(session_id: str):
         session = await ChatSession.get(full_session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
+        _ensure_session_owner(session, x_client_id)
 
         await session.delete()
+
+        # Also remove the LangGraph checkpoint so conversation content does not
+        # linger on disk after the session record is gone.
+        try:
+            await asyncio.to_thread(delete_chat_thread, full_session_id)
+        except Exception as cleanup_err:
+            logger.warning(
+                f"Failed to delete checkpoint for {full_session_id}: {cleanup_err}"
+            )
 
         return SuccessResponse(success=True, message="Session deleted successfully")
     except NotFoundError:
@@ -328,7 +369,10 @@ async def delete_session(session_id: str):
 
 
 @router.post("/chat/execute", response_model=ExecuteChatResponse)
-async def execute_chat(request: ExecuteChatRequest):
+async def execute_chat(
+    request: ExecuteChatRequest,
+    x_client_id: Optional[str] = Header(None),
+):
     """Execute a chat request and get AI response."""
     try:
         # Verify session exists
@@ -341,6 +385,7 @@ async def execute_chat(request: ExecuteChatRequest):
         session = await ChatSession.get(full_session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
+        _ensure_session_owner(session, x_client_id)
 
         # Fetch notebook linked to this session
         notebook_query = await repo_query(

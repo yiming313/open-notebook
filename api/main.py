@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 
@@ -147,10 +148,20 @@ async def lifespan(app: FastAPI):
 
     logger.success("API initialization completed successfully")
 
+    # Start background sweeper that purges expired (ephemeral) chat sessions.
+    from api.chat_cleanup import chat_session_sweeper_loop
+
+    sweeper_task = asyncio.create_task(chat_session_sweeper_loop())
+
     # Yield control to the application
     yield
 
-    # Shutdown: cleanup if needed
+    # Shutdown: stop the sweeper task
+    sweeper_task.cancel()
+    try:
+        await sweeper_task
+    except asyncio.CancelledError:
+        pass
     logger.info("API shutdown complete")
 
 

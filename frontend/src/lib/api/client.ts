@@ -1,6 +1,20 @@
 import axios, { AxiosResponse } from 'axios'
 import { getApiUrl } from '@/lib/config'
 
+// Per-browser ephemeral identity used to keep chat sessions private.
+// Stored in sessionStorage so it is cleared when the tab/window closes —
+// reopening the app yields a new id, so previous conversations are no longer
+// listed. Sent as the X-Client-ID header on every request; the backend scopes
+// chat sessions by it (notebooks/sources remain shared and are unaffected).
+const getOrCreateClientId = (): string => {
+  let id = sessionStorage.getItem('on_client_id')
+  if (!id) {
+    id = crypto.randomUUID()
+    sessionStorage.setItem('on_client_id', id)
+  }
+  return id
+}
+
 // API client with runtime-configurable base URL
 // The base URL is fetched from the API config endpoint on first request
 // Timeout increased to 10 minutes (600000ms = 600s) to accommodate slow LLM operations
@@ -35,6 +49,9 @@ apiClient.interceptors.request.use(async (config) => {
         console.error('Error parsing auth storage:', error)
       }
     }
+
+    // Attach per-browser client id for chat-session isolation
+    config.headers['X-Client-ID'] = getOrCreateClientId()
   }
 
   // Handle FormData vs JSON content types

@@ -91,6 +91,25 @@ conn = sqlite3.connect(
 )
 memory = SqliteSaver(conn)
 
+
+def delete_thread(thread_id: str) -> None:
+    """Delete all checkpoint data for a chat thread (conversation history).
+
+    Used when a chat session is deleted or purged by the TTL sweeper so that
+    conversation content does not linger on disk. Falls back to raw SQL deletes
+    if the installed langgraph SqliteSaver has no public delete_thread API.
+    """
+    try:
+        memory.delete_thread(thread_id)
+    except AttributeError:
+        for tbl in ("checkpoints", "writes", "checkpoint_blobs", "checkpoint_writes"):
+            try:
+                conn.execute(f"DELETE FROM {tbl} WHERE thread_id = ?", (thread_id,))
+            except sqlite3.OperationalError:
+                # Table may not exist in this langgraph version; ignore.
+                pass
+        conn.commit()
+
 agent_state = StateGraph(ThreadState)
 agent_state.add_node("agent", call_model_with_messages)
 agent_state.add_edge(START, "agent")

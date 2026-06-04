@@ -50,6 +50,9 @@
   <a href="https://zdoc.app/zh/lfnovo/open-notebook">中文</a>
 </div>
 
+> 🚀 **How to run this app:** see **[RUN.md](RUN.md)** for local & server setup.
+> This fork adds per-browser **chat session isolation** (private, ephemeral chats over a shared library).
+
 ## A private, multi-model, 100% local, full-featured alternative to Notebook LM
 
 ![New Notebook](docs/assets/asset_list.png)

@@ -1,4 +1,4 @@
-import apiClient from './client'
+import apiClient, { getOrCreateClientId } from './client'
 import {
   SourceChatSession,
   SourceChatSessionWithMessages,
@@ -49,7 +49,9 @@ export const sourceChatApi = {
   sendMessage: (sourceId: string, sessionId: string, data: SendMessageRequest) => {
     // Get auth token using the same logic as apiClient interceptor
     let token = null
+    let clientId = null
     if (typeof window !== 'undefined') {
+      clientId = getOrCreateClientId()
       const authStorage = localStorage.getItem('auth-storage')
       if (authStorage) {
         try {
@@ -72,7 +74,8 @@ export const sourceChatApi = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(token && { 'Authorization': `Bearer ${token}` })
+        ...(token && { 'Authorization': `Bearer ${token}` }),
+        ...(clientId && { 'X-Client-ID': clientId })
       },
       body: JSON.stringify(data)
     }).then(response => {

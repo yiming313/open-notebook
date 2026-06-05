@@ -2,7 +2,7 @@ import asyncio
 import json
 from typing import AsyncGenerator, List, Optional
 
-from fastapi import APIRouter, HTTPException, Path
+from fastapi import APIRouter, Header, HTTPException, Path
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
@@ -18,6 +18,12 @@ from open_notebook.graphs.source_chat import source_chat_graph as source_chat_gr
 from open_notebook.utils.graph_utils import get_session_message_count
 
 router = APIRouter()
+
+
+def _ensure_session_owner(session: ChatSession, client_id: Optional[str]) -> None:
+    """Guard source chat sessions to the browser that created them."""
+    if session.client_id != client_id:
+        raise HTTPException(status_code=404, detail="Session not found")
 
 
 # Request/Response models
@@ -90,6 +96,7 @@ class SuccessResponse(BaseModel):
 async def create_source_chat_session(
     request: CreateSourceChatSessionRequest,
     source_id: str = Path(..., description="Source ID"),
+    x_client_id: Optional[str] = Header(None),
 ):
     """Create a new chat session for a source."""
     try:
@@ -105,6 +112,7 @@ async def create_source_chat_session(
         session = ChatSession(
             title=request.title or f"Source Chat {asyncio.get_event_loop().time():.0f}",
             model_override=request.model_override,
+            client_id=x_client_id,
         )
         await session.save()
 
@@ -120,6 +128,8 @@ async def create_source_chat_session(
             updated=str(session.updated),
             message_count=0,
         )
+    except HTTPException:
+        raise
     except NotFoundError:
         raise HTTPException(status_code=404, detail="Source not found")
     except Exception as e:
@@ -132,7 +142,10 @@ async def create_source_chat_session(
 @router.get(
     "/sources/{source_id}/chat/sessions", response_model=List[SourceChatSessionResponse]
 )
-async def get_source_chat_sessions(source_id: str = Path(..., description="Source ID")):
+async def get_source_chat_sessions(
+    source_id: str = Path(..., description="Source ID"),
+    x_client_id: Optional[str] = Header(None),
+):
     """Get all chat sessions for a source."""
     try:
         # Verify source exists
@@ -160,6 +173,8 @@ async def get_source_chat_sessions(source_id: str = Path(..., description="Sourc
                 )
                 if session_result and len(session_result) > 0:
                     session_data = session_result[0]
+                    if session_data.get("client_id") != x_client_id:
+                        continue
 
                     # Get message count from LangGraph state
                     msg_count = await get_session_message_count(
@@ -181,6 +196,8 @@ async def get_source_chat_sessions(source_id: str = Path(..., description="Sourc
         # Sort sessions by created date (newest first)
         sessions.sort(key=lambda x: x.created, reverse=True)
         return sessions
+    except HTTPException:
+        raise
     except NotFoundError:
         raise HTTPException(status_code=404, detail="Source not found")
     except Exception as e:
@@ -197,6 +214,7 @@ async def get_source_chat_sessions(source_id: str = Path(..., description="Sourc
 async def get_source_chat_session(
     source_id: str = Path(..., description="Source ID"),
     session_id: str = Path(..., description="Session ID"),
+    x_client_id: Optional[str] = Header(None),
 ):
     """Get a specific source chat session with its messages."""
     try:
@@ -217,6 +235,7 @@ async def get_source_chat_session(
         session = await ChatSession.get(full_session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
+        _ensure_session_owner(session, x_client_id)
 
         # Verify session is related to this source
         relation_query = await repo_query(
@@ -278,6 +297,8 @@ async def get_source_chat_session(
             messages=messages,
             context_indicators=context_indicators,
         )
+    except HTTPException:
+        raise
     except NotFoundError:
         raise HTTPException(status_code=404, detail="Source or session not found")
     except Exception as e:
@@ -295,6 +316,7 @@ async def update_source_chat_session(
     request: UpdateSourceChatSessionRequest,
     source_id: str = Path(..., description="Source ID"),
     session_id: str = Path(..., description="Session ID"),
+    x_client_id: Optional[str] = Header(None),
 ):
     """Update source chat session title and/or model override."""
     try:
@@ -315,6 +337,7 @@ async def update_source_chat_session(
         session = await ChatSession.get(full_session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
+        _ensure_session_owner(session, x_client_id)
 
         # Verify session is related to this source
         relation_query = await repo_query(
@@ -350,6 +373,8 @@ async def update_source_chat_session(
             updated=str(session.updated),
             message_count=msg_count,
         )
+    except HTTPException:
+        raise
     except NotFoundError:
         raise HTTPException(status_code=404, detail="Source or session not found")
     except Exception as e:
@@ -365,6 +390,7 @@ async def update_source_chat_session(
 async def delete_source_chat_session(
     source_id: str = Path(..., description="Source ID"),
     session_id: str = Path(..., description="Session ID"),
+    x_client_id: Optional[str] = Header(None),
 ):
     """Delete a source chat session."""
     try:
@@ -385,6 +411,7 @@ async def delete_source_chat_session(
         session = await ChatSession.get(full_session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
+        _ensure_session_owner(session, x_client_id)
 
         # Verify session is related to this source
         relation_query = await repo_query(
@@ -405,6 +432,8 @@ async def delete_source_chat_session(
         return SuccessResponse(
             success=True, message="Source chat session deleted successfully"
         )
+    except HTTPException:
+        raise
     except NotFoundError:
         raise HTTPException(status_code=404, detail="Source or session not found")
     except Exception as e:
@@ -485,6 +514,7 @@ async def send_message_to_source_chat(
     request: SendMessageRequest,
     source_id: str = Path(..., description="Source ID"),
     session_id: str = Path(..., description="Session ID"),
+    x_client_id: Optional[str] = Header(None),
 ):
     """Send a message to source chat session with SSE streaming response."""
     try:
@@ -505,6 +535,7 @@ async def send_message_to_source_chat(
         session = await ChatSession.get(full_session_id)
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
+        _ensure_session_owner(session, x_client_id)
 
         # Verify session is related to this source
         relation_query = await repo_query(

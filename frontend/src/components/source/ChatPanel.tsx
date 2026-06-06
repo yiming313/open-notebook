@@ -203,7 +203,7 @@ export function ChatPanel({
                           onReferenceClick={handleReferenceClick}
                         />
                       ) : (
-                        <p className="text-sm break-all">{message.content}</p>
+                        <p className="text-sm whitespace-pre-wrap break-words">{message.content}</p>
                       )}
                     </div>
                     {message.type === 'ai' && (

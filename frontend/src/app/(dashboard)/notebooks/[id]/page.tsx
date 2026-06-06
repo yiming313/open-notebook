@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
+import type { PointerEvent as ReactPointerEvent } from 'react'
 import { useParams } from 'next/navigation'
 import { AppShell } from '@/components/layout/AppShell'
 import { NotebookHeader } from '../components/NotebookHeader'
@@ -23,6 +24,17 @@ export type ContextMode = 'off' | 'insights' | 'full'
 export interface ContextSelections {
   sources: Record<string, ContextMode>
   notes: Record<string, ContextMode>
+}
+
+const CHAT_WIDTH_STORAGE_KEY = 'notebook-chat-column-width'
+const DEFAULT_CHAT_WIDTH = 480
+// Wide range so users can collapse to a narrow column on big monitors or
+// expand chat to take up most of the screen for long-form conversations.
+const MIN_CHAT_WIDTH = 240
+const MAX_CHAT_WIDTH = 1800
+
+function clampChatWidth(width: number) {
+  return Math.min(MAX_CHAT_WIDTH, Math.max(MIN_CHAT_WIDTH, width))
 }
 
 export default function NotebookPage() {
@@ -51,12 +63,55 @@ export default function NotebookPage() {
 
   // Mobile tab state (Sources, Notes, or Chat)
   const [mobileActiveTab, setMobileActiveTab] = useState<'sources' | 'notes' | 'chat'>('chat')
+  const [chatWidth, setChatWidth] = useState(DEFAULT_CHAT_WIDTH)
 
   // Context selection state
   const [contextSelections, setContextSelections] = useState<ContextSelections>({
     sources: {},
     notes: {}
   })
+
+  useEffect(() => {
+    const storedWidth = window.localStorage.getItem(CHAT_WIDTH_STORAGE_KEY)
+    if (!storedWidth) return
+
+    const parsedWidth = Number(storedWidth)
+    if (Number.isFinite(parsedWidth)) {
+      setChatWidth(clampChatWidth(parsedWidth))
+    }
+  }, [])
+
+  const updateChatWidth = useCallback((width: number) => {
+    const nextWidth = clampChatWidth(width)
+    setChatWidth(nextWidth)
+    window.localStorage.setItem(CHAT_WIDTH_STORAGE_KEY, String(nextWidth))
+  }, [])
+
+  const handleChatResizeStart = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+
+    const startX = event.clientX
+    const startWidth = chatWidth
+    const previousCursor = document.body.style.cursor
+    const previousUserSelect = document.body.style.userSelect
+
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      updateChatWidth(startWidth - (moveEvent.clientX - startX))
+    }
+
+    const handlePointerUp = () => {
+      document.body.style.cursor = previousCursor
+      document.body.style.userSelect = previousUserSelect
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
+    }
+
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', handlePointerUp)
+  }, [chatWidth, updateChatWidth])
 
   // Initialize and update selections when sources load or change
   useEffect(() => {
@@ -195,13 +250,13 @@ export default function NotebookPage() {
 
           {/* Desktop: Collapsible columns layout */}
           <div className={cn(
-            'hidden lg:flex h-full min-h-0 gap-6 transition-all duration-150',
+            'hidden lg:flex h-full min-h-0 gap-4 transition-all duration-150',
             'flex-row'
           )}>
             {/* Sources Column */}
             <div className={cn(
               'transition-all duration-150',
-              sourcesCollapsed ? 'w-12 flex-shrink-0' : 'flex-none basis-1/3'
+              sourcesCollapsed ? 'w-12 flex-shrink-0' : 'flex-1 min-w-[240px]'
             )}>
               <SourcesColumn
                 sources={sources}
@@ -220,7 +275,7 @@ export default function NotebookPage() {
             {/* Notes Column */}
             <div className={cn(
               'transition-all duration-150',
-              notesCollapsed ? 'w-12 flex-shrink-0' : 'flex-none basis-1/3'
+              notesCollapsed ? 'w-12 flex-shrink-0' : 'flex-1 min-w-[240px]'
             )}>
               <NotesColumn
                 notes={notes}
@@ -231,8 +286,20 @@ export default function NotebookPage() {
               />
             </div>
 
-            {/* Chat Column - always expanded, takes remaining space */}
-            <div className="transition-all duration-150 flex-1 min-w-0 lg:pr-6 lg:-mr-6">
+            <button
+              type="button"
+              aria-label="Resize chat"
+              onPointerDown={handleChatResizeStart}
+              className="group relative flex w-3 flex-shrink-0 cursor-col-resize touch-none items-stretch justify-center rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <span className="my-2 w-px rounded-full bg-border transition-colors group-hover:bg-primary group-focus-visible:bg-primary" />
+            </button>
+
+            {/* Chat Column - user resizable on desktop */}
+            <div
+              className="transition-all duration-150 min-w-0 flex-shrink-0 lg:pr-6 lg:-mr-6"
+              style={{ width: chatWidth, flexBasis: chatWidth }}
+            >
               <ChatColumn
                 notebookId={notebookId}
                 contextSelections={contextSelections}

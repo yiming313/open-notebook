@@ -60,6 +60,8 @@ import {
   Database,
   AlertCircle,
   MessageSquare,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { getDateLocale } from '@/lib/utils/date-locale'
@@ -98,6 +100,11 @@ export function SourceDetailContent({
   const [selectedInsight, setSelectedInsight] = useState<SourceInsightResponse | null>(null)
   const [insightToDelete, setInsightToDelete] = useState<string | null>(null)
   const [deletingInsight, setDeletingInsight] = useState(false)
+  // Default-collapsed source content. Rendering ReactMarkdown on large
+  // documents is the most expensive thing on this page; keeping it hidden
+  // until the user explicitly asks for it removes the cost from any layout
+  // change (e.g. resizing the chat panel).
+  const [contentExpanded, setContentExpanded] = useState(false)
 
   const fetchSource = useCallback(async () => {
     try {
@@ -354,6 +361,43 @@ export function SourceDetailContent({
     return getYouTubeVideoId(source.asset.url)
   }, [source?.asset?.url])
 
+  // Threshold above which we treat the document as "long" and hide it
+  // behind the expand toggle by default. Tuned so short notes / snippets
+  // still show inline without an extra click.
+  const COLLAPSE_THRESHOLD_CHARS = 600
+  const fullTextRaw = source?.full_text || ''
+  const contentIsLong = fullTextRaw.length > COLLAPSE_THRESHOLD_CHARS
+  const fullTextForRender = fullTextRaw || t('sources.noContent')
+
+  // Memoize the rendered markdown so layout changes (e.g. chat panel
+  // resize) don't trigger a re-parse of the entire document.
+  const renderedMarkdown = useMemo(() => (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        p: ({ children }) => <p className="mb-4">{children}</p>,
+        h1: ({ children }) => <h1 className="text-2xl font-bold mt-6 mb-4">{children}</h1>,
+        h2: ({ children }) => <h2 className="text-xl font-bold mt-5 mb-3">{children}</h2>,
+        h3: ({ children }) => <h3 className="text-lg font-semibold mt-4 mb-2">{children}</h3>,
+        ul: ({ children }) => <ul className="mb-4 list-disc pl-6">{children}</ul>,
+        ol: ({ children }) => <ol className="mb-4 list-decimal pl-6">{children}</ol>,
+        li: ({ children }) => <li className="mb-1">{children}</li>,
+        table: ({ children }) => (
+          <div className="my-4 overflow-x-auto">
+            <table className="min-w-full border-collapse border border-border">{children}</table>
+          </div>
+        ),
+        thead: ({ children }) => <thead className="bg-muted">{children}</thead>,
+        tbody: ({ children }) => <tbody>{children}</tbody>,
+        tr: ({ children }) => <tr className="border-b border-border">{children}</tr>,
+        th: ({ children }) => <th className="border border-border px-3 py-2 text-left font-semibold">{children}</th>,
+        td: ({ children }) => <td className="border border-border px-3 py-2">{children}</td>,
+      }}
+    >
+      {fullTextForRender}
+    </ReactMarkdown>
+  ), [fullTextForRender])
+
   const handleDelete = async () => {
     if (!source) return
 
@@ -520,32 +564,49 @@ export function SourceDetailContent({
                     )}
                   </div>
                 )}
-                <div className="prose prose-sm prose-neutral dark:prose-invert max-w-none prose-headings:font-semibold prose-a:text-blue-600 prose-code:bg-muted prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-p:mb-4 prose-p:leading-7 prose-li:mb-2">
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    components={{
-                      p: ({ children }) => <p className="mb-4">{children}</p>,
-                      h1: ({ children }) => <h1 className="text-2xl font-bold mt-6 mb-4">{children}</h1>,
-                      h2: ({ children }) => <h2 className="text-xl font-bold mt-5 mb-3">{children}</h2>,
-                      h3: ({ children }) => <h3 className="text-lg font-semibold mt-4 mb-2">{children}</h3>,
-                      ul: ({ children }) => <ul className="mb-4 list-disc pl-6">{children}</ul>,
-                      ol: ({ children }) => <ol className="mb-4 list-decimal pl-6">{children}</ol>,
-                      li: ({ children }) => <li className="mb-1">{children}</li>,
-                      table: ({ children }) => (
-                        <div className="my-4 overflow-x-auto">
-                          <table className="min-w-full border-collapse border border-border">{children}</table>
-                        </div>
-                      ),
-                      thead: ({ children }) => <thead className="bg-muted">{children}</thead>,
-                      tbody: ({ children }) => <tbody>{children}</tbody>,
-                      tr: ({ children }) => <tr className="border-b border-border">{children}</tr>,
-                      th: ({ children }) => <th className="border border-border px-3 py-2 text-left font-semibold">{children}</th>,
-                      td: ({ children }) => <td className="border border-border px-3 py-2">{children}</td>,
-                    }}
-                  >
-                    {source.full_text || t('sources.noContent')}
-                  </ReactMarkdown>
-                </div>
+                {/* Long documents are collapsed by default. ReactMarkdown
+                    re-parses the entire string on every render, which is the
+                    biggest single perf cost on this page — keeping it hidden
+                    until the user opts in makes layout changes (e.g. chat
+                    panel resize) cheap. */}
+                {contentIsLong && !contentExpanded ? (
+                  <div className="space-y-3">
+                    <div className="rounded-md border bg-muted/30 p-4">
+                      <p className="text-sm text-muted-foreground">
+                        {String(t('sources.contentCollapsedHint')).replace(
+                          '{chars}',
+                          fullTextRaw.length.toLocaleString(),
+                        )}
+                      </p>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setContentExpanded(true)}
+                      className="w-full"
+                    >
+                      <ChevronDown className="mr-2 h-4 w-4" />
+                      {t('sources.showFullContent')}
+                    </Button>
+                  </div>
+                ) : (
+                  <>
+                    <div className="prose prose-sm prose-neutral dark:prose-invert max-w-none prose-headings:font-semibold prose-a:text-blue-600 prose-code:bg-muted prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-p:mb-4 prose-p:leading-7 prose-li:mb-2">
+                      {renderedMarkdown}
+                    </div>
+                    {contentIsLong && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setContentExpanded(false)}
+                        className="mt-3 w-full"
+                      >
+                        <ChevronUp className="mr-2 h-4 w-4" />
+                        {t('sources.hideContent')}
+                      </Button>
+                    )}
+                  </>
+                )}
               </CardContent>
             </Card>
           </TabsContent>

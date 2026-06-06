@@ -59,11 +59,33 @@ export default function SourceDetailPage() {
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
 
+    // Coalesce pointermove events into one paint frame. Without this, a
+    // smooth mouse can fire 1000+ moves/s, each one triggering a React
+    // setState + full re-render of the page. RAF caps it at ~60Hz.
+    let pendingX: number | null = null
+    let rafId: number | null = null
+
+    const flush = () => {
+      rafId = null
+      if (pendingX === null) return
+      updateChatWidth(startWidth - (pendingX - startX))
+      pendingX = null
+    }
+
     const handlePointerMove = (moveEvent: PointerEvent) => {
-      updateChatWidth(startWidth - (moveEvent.clientX - startX))
+      pendingX = moveEvent.clientX
+      if (rafId === null) {
+        rafId = window.requestAnimationFrame(flush)
+      }
     }
 
     const handlePointerUp = () => {
+      if (rafId !== null) {
+        window.cancelAnimationFrame(rafId)
+        rafId = null
+      }
+      // Apply the final position so we never settle on a stale value.
+      flush()
       document.body.style.cursor = previousCursor
       document.body.style.userSelect = previousUserSelect
       window.removeEventListener('pointermove', handlePointerMove)

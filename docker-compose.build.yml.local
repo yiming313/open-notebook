@@ -1,0 +1,39 @@
+services:
+  surrealdb:
+    image: surrealdb/surrealdb:v2
+    command: start --log info --user root --pass root rocksdb:/mydata/mydatabase.db
+    user: root
+    # Internal-only (see comment in docker-compose.yml). Uncomment for
+    # external DB debugging.
+    # ports:
+    #   - "0.0.0.0:8000:8000"
+    expose:
+      - "8000"
+    volumes:
+      - ./surreal_data:/mydata
+    environment:
+      - SURREAL_EXPERIMENTAL_GRAPHQL=true
+    restart: unless-stopped
+
+  open_notebook:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Bind to 0.0.0.0 for LAN access (http://<host-LAN-IP>:8502 + :5055).
+    # Remember to allow these ports through the host firewall.
+    ports:
+      - "0.0.0.0:8502:8502"
+      - "0.0.0.0:5055:5055"
+    env_file:
+      - ./.env
+    environment:
+      - SURREAL_URL=ws://surrealdb:8000/rpc
+      - SURREAL_USER=root
+      - SURREAL_PASSWORD=root
+      - SURREAL_NAMESPACE=open_notebook
+      - SURREAL_DATABASE=open_notebook
+    volumes:
+      - ./notebook_data:/app/data
+    depends_on:
+      - surrealdb
+    restart: unless-stopped

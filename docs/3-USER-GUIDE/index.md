@@ -109,6 +109,19 @@ Configure AI provider API keys directly through the Settings UI.
 
 ---
 
+## Automation
+
+### [Command-Line Interface (CLI)](cli.md)
+Query a source or notebook from the terminal and get a distilled text answer on stdout — ideal for scripting and coding agents (e.g. Claude Code).
+
+**Quick links:**
+- `open-notebook source <id|title> "question"` — chat with one file
+- `open-notebook notebook <id|name> "question"` — chat with a whole notebook
+- Discover ids with `list-notebooks` / `list-sources`
+- Capture answers in shell variables for automation
+
+---
+
 ## Which Feature for Which Task?
 
 ```

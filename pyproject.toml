@@ -43,6 +43,9 @@ dependencies = [
     "babel>=2.18.0",
 ]
 
+[project.scripts]
+open-notebook = "open_notebook.cli.main:main"
+
 [tool.setuptools]
 package-dir = {"open_notebook" = "open_notebook"}
 

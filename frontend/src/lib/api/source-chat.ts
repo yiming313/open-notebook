@@ -46,7 +46,7 @@ export const sourceChatApi = {
   },
 
   // Messaging with streaming
-  sendMessage: (sourceId: string, sessionId: string, data: SendMessageRequest) => {
+  sendMessage: (sourceId: string, sessionId: string, data: SendMessageRequest, signal?: AbortSignal) => {
     // Get auth token using the same logic as apiClient interceptor
     let token = null
     let clientId = null
@@ -77,7 +77,8 @@ export const sourceChatApi = {
         ...(token && { 'Authorization': `Bearer ${token}` }),
         ...(clientId && { 'X-Client-ID': clientId })
       },
-      body: JSON.stringify(data)
+      body: JSON.stringify(data),
+      ...(signal && { signal })
     }).then(response => {
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`)

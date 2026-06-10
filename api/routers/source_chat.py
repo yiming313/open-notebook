@@ -469,13 +469,41 @@ async def stream_source_chat_response(
         user_event = {"type": "user_message", "content": message, "timestamp": None}
         yield f"data: {json.dumps(user_event)}\n\n"
 
-        # Execute source chat graph synchronously (like notebook chat does)
-        result = source_chat_graph.invoke(
-            input=state_values,  # type: ignore[arg-type]
-            config=RunnableConfig(
-                configurable={"thread_id": session_id, "model_id": model_override}
+        # Execute the source chat graph in a worker thread instead of
+        # blocking the event loop. The graph's call_model node is fully
+        # synchronous (model.invoke), so for a large document it can run
+        # for minutes. Running it inline here would (a) block the whole
+        # async event loop and (b) leave the SSE connection idle for the
+        # entire generation -- which is exactly what makes proxies / load
+        # balancers silently drop the connection, so the browser keeps
+        # spinning forever even though the answer was generated and saved.
+        #
+        # By offloading to a thread and emitting periodic heartbeats while
+        # we wait, the connection always has bytes flowing and survives
+        # long generations.
+        loop = asyncio.get_running_loop()
+        invoke_future = loop.run_in_executor(
+            None,
+            lambda: source_chat_graph.invoke(
+                state_values,  # type: ignore[arg-type]
+                config=RunnableConfig(
+                    configurable={"thread_id": session_id, "model_id": model_override}
+                ),
             ),
         )
+
+        # Heartbeat loop: wait for the graph to finish, emitting an SSE
+        # comment line every 15s so the connection never goes idle. SSE
+        # comment lines start with ":" and are ignored by EventSource and
+        # by our own "data: " line parser on the frontend.
+        while True:
+            done, _ = await asyncio.wait({invoke_future}, timeout=15)
+            if done:
+                break
+            yield ": keep-alive\n\n"
+
+        # Re-raises here if the graph errored, handled by the except below.
+        result = invoke_future.result()
 
         # Stream the complete AI response
         if "messages" in result:
@@ -575,6 +603,10 @@ async def send_message_to_source_chat(
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
                 "Content-Type": "text/plain; charset=utf-8",
+                # Disable proxy buffering (nginx and others honor this) so
+                # heartbeats and the final answer are flushed to the client
+                # immediately instead of being held in a buffer.
+                "X-Accel-Buffering": "no",
             },
         )
 

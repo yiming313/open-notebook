@@ -131,11 +131,16 @@ export function useSourceChat(sourceId: string) {
     setMessages(prev => [...prev, userMessage])
     setIsStreaming(true)
 
+    // Wire up an AbortController so cancelStreaming() can actually abort
+    // the in-flight fetch (previously the ref was never attached to it).
+    const abortController = new AbortController()
+    abortControllerRef.current = abortController
+
     try {
       const response = await sourceChatApi.sendMessage(sourceId, sessionId, {
         message,
         model_override: modelOverride
-      })
+      }, abortController.signal)
 
       if (!response) {
         throw new Error('No response body')
@@ -144,20 +149,33 @@ export function useSourceChat(sourceId: string) {
       const reader = response.getReader()
       const decoder = new TextDecoder()
       let aiMessage: SourceChatMessage | null = null
+      // Buffer partial lines across chunks: a single "data: {json}" event
+      // can be split across two reads, which would otherwise throw a JSON
+      // parse error and drop the final answer / complete signal.
+      let buffer = ''
+      let streamComplete = false
 
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
 
-        const text = decoder.decode(value)
-        const lines = text.split('\n')
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        // Keep the last (possibly incomplete) segment in the buffer.
+        buffer = lines.pop() ?? ''
 
         for (const line of lines) {
+          // SSE comment / heartbeat lines (": keep-alive") are ignored.
           if (line.startsWith('data: ')) {
             try {
               const data = JSON.parse(line.slice(6))
-              
-              if (data.type === 'ai_message') {
+
+              if (data.type === 'complete') {
+                // Server finished and persisted the turn. Stop here so the
+                // spinner clears even if the connection doesn't close cleanly.
+                streamComplete = true
+                break
+              } else if (data.type === 'ai_message') {
                 // Create AI message on first content chunk to avoid empty bubble
                 if (!aiMessage) {
                   aiMessage = {
@@ -190,14 +208,26 @@ export function useSourceChat(sourceId: string) {
             }
           }
         }
+
+        if (streamComplete) {
+          // Stop reading the (possibly still-open) connection.
+          reader.cancel().catch(() => {})
+          break
+        }
       }
     } catch (err: unknown) {
-      const error = err as { response?: { data?: { detail?: string } }, message?: string };
-      console.error('Error sending message:', error)
-      toast.error(getApiErrorMessage(error.response?.data?.detail || error.message, (key) => t(key), 'apiErrors.failedToSendMessage'))
-      // Remove optimistic messages on error
-      setMessages(prev => prev.filter(msg => !msg.id.startsWith('temp-')))
+      // A user-initiated cancel (cancelStreaming -> abort) surfaces as an
+      // AbortError; that's expected, not a failure, so don't toast it.
+      const isAbort = err instanceof DOMException && err.name === 'AbortError'
+      if (!isAbort) {
+        const error = err as { response?: { data?: { detail?: string } }, message?: string };
+        console.error('Error sending message:', error)
+        toast.error(getApiErrorMessage(error.response?.data?.detail || error.message, (key) => t(key), 'apiErrors.failedToSendMessage'))
+        // Remove optimistic messages on error
+        setMessages(prev => prev.filter(msg => !msg.id.startsWith('temp-')))
+      }
     } finally {
+      abortControllerRef.current = null
       setIsStreaming(false)
       // Refetch session to get persisted messages
       refetchCurrentSession()

@@ -100,9 +100,22 @@ class CLIClient:
     def list_sources(
         self, notebook_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        params = {"notebook_id": notebook_id} if notebook_id else None
-        result = self._request("GET", "/api/sources", params=params)
-        return result if isinstance(result, list) else []
+        # The /api/sources endpoint paginates (default 50, max 100 per page),
+        # so page through it to return every source without truncation.
+        page_size = 100
+        offset = 0
+        all_sources: List[Dict[str, Any]] = []
+        while True:
+            params: Dict[str, Any] = {"limit": page_size, "offset": offset}
+            if notebook_id:
+                params["notebook_id"] = notebook_id
+            result = self._request("GET", "/api/sources", params=params)
+            page = result if isinstance(result, list) else []
+            all_sources.extend(page)
+            if len(page) < page_size:
+                break
+            offset += page_size
+        return all_sources
 
     def list_notes(
         self, notebook_id: Optional[str] = None
